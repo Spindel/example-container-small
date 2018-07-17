@@ -1,0 +1,38 @@
+image: registry.gitlab.com/modioab/base-image:fedora-28-build-master
+
+stages:
+  - test
+  - build
+  - publish
+
+before_script:
+  - podman login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
+  - podman info
+
+test_hello:
+  stage: test
+  tags:
+    - x86_64
+  script:
+    - bash -x hello.sh
+
+build_binary:
+  stage: build
+  tags:
+    - x86_64
+  script:
+    - cp hello.sh project/hello
+  artifacts:
+      paths:
+          - project/hello
+      expire_in: 1 week
+
+container:
+  stage: publish
+  tags:
+    - buildah
+    - x86_64
+  script:
+    - make -C dist build-publish
+  dependencies:
+      - build_binary

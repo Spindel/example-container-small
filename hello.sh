@@ -2,4 +2,4 @@
 echo "Hello world"
 
 sleep 10
-return 0
+exit 0

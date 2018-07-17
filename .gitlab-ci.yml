@@ -21,7 +21,7 @@ build_binary:
   tags:
     - x86_64
   script:
-    - cp hello.sh project/hello
+    - make project/hello
   artifacts:
       paths:
           - project/hello
@@ -33,6 +33,6 @@ container:
     - buildah
     - x86_64
   script:
-    - make -C dist build-publish
+    - make -C project build-publish
   dependencies:
       - build_binary

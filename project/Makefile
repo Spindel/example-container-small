@@ -1,5 +1,5 @@
-IMAGE_REPO = registry.gitlab.com/modioab/foobar
-IMAGE_TAG_PREFIX = ssh-ca
+IMAGE_REPO = registry.gitlab.com/spindel/example-container-small/example
+IMAGE_TAG_PREFIX = something
 
 FEDORA_ROOT_ARCHIVE = rootfs.tar
 IMAGE_FILES = $(FEDORA_ROOT_ARCHIVE)

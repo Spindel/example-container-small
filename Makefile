@@ -1,12 +1,11 @@
 SUBDIRS = project
 
 
-.PHONY: all clean $(SUBDIRS)
+.PHONY: all clean $(SUBDIRS) login
 
 project/hello:
-	# Generic build instruction
-	cp hello.sh project/hello
-	chmod +x project/hello
+	# Replace this with a compile/build/other step
+	install -T hello.sh project/hello
 
 all clean: $(SUBDIRS)
 

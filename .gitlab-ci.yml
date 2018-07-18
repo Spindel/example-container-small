@@ -1,16 +1,7 @@
 stages:
-  - test
   - build
+  - test
   - publish
-
-
-test_hello:
-  stage: test
-  tags:
-    - x86_64
-  image: ubuntu:latest
-  script:
-    - bash -x hello.sh
 
 
 build_binary:
@@ -26,6 +17,15 @@ build_binary:
       expire_in: 1 week
 
 
+test_hello:
+  stage: test
+  tags:
+    - x86_64
+  image: ubuntu:latest
+  script:
+    - bash -x hello.sh
+
+
 container:
   stage: publish
   tags:
@@ -34,7 +34,6 @@ container:
   image: registry.gitlab.com/modioab/base-image:fedora-28-build-master
   before_script:
       - podman login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
-      - podman info
   dependencies:
       - build_binary
   script:

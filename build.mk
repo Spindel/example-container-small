@@ -45,6 +45,9 @@ endif
 endif
 
 
+# MAKEFILE_LIST needs to be checked before any includes are processed.
+_buildmk_path := $(lastword $(MAKEFILE_LIST))
+
 # In the rare case that stdout is a TTY while TERM is not set, provide a
 # fallback.
 TERM ?= dumb
@@ -70,12 +73,12 @@ endif
 # The "define" command may be used to assign multiple-line values to
 # variables:
 #
-# define _cmd_example
+# define _cmd_example =
 # $(Q)rot13 < $< > $@
 # endef
 # _log_cmd_example = ROT13 $@
 
-define _cmd
+define _cmd =
 @$(if $(_log_cmd_$(1)), $(_log_before);printf '  %-9s %s\n' $(_log_cmd_$(1));$(_log_after);)
 $(_cmd_$(1))
 endef
@@ -84,7 +87,7 @@ endef
 ## Add your built files to the CLEANUP_FILES variable to have them
 ## cleaned up by the clean goal.
 
-define _cmd_clean
+define _cmd_clean =
 $(Q)rm -rf $(CLEANUP_FILES)
 endef
 _log_cmd_clean = CLEAN
@@ -109,6 +112,10 @@ _archive_prefix := $(patsubst %/,%,$(patsubst /%,%,$(ARCHIVE_PREFIX)))/
 # not available, an error should be raised.
 GIT ?= git
 _git = $(shell command -v $(GIT))
+
+# Check if we have a curl binary, same as for _git.
+CURL ?= curl
+_curl = $(shell command -v $(CURL))
 
 
 ######################################################################
@@ -149,7 +156,7 @@ GIT_HEAD_REF_FILE := $(shell if [ -f $(GIT_HEAD_REF_FILE) ]; then \
                                echo $(GIT_TOP_DIR)/$(GIT_HEAD_REF_FILE); \
                              fi)
 
-define _cmd_source_archive
+define _cmd_source_archive =
 $(Q)tmpdir=$$(mktemp -d submodules.XXXXX) && \
 trap "rm -rf $$tmpdir" EXIT && \
 (cd "$(GIT_TOP_DIR)" && \
@@ -225,7 +232,7 @@ ifneq ($(COMPILED_ARCHIVE),)
 
 CLEANUP_FILES += $(COMPILED_ARCHIVE)
 
-define _cmd_compile_archive
+define _cmd_compile_archive =
 $(Q)tmpdir=$$(mktemp -d compilation.XXXXX) && \
 trap "rm -rf $$tmpdir" EXIT && \
 (tar -C $$tmpdir -xf $(SOURCE_ARCHIVE) && \
@@ -241,39 +248,45 @@ endif
 
 
 ######################################################################
-### Docker image
+### Container image
 ######################################################################
 
-## Set the IMAGE_ARCHIVE variable to a file name to create a rule
-## which will build a docker image, and written to IMAGE_ARCHIVE with
-## docker save.
+## Set the IMAGE_REPO variable to a container registry URL to create rules
+## which will build and push a container image.
 ##
 ## The IMAGE_REPO variable and optionally the IMAGE_TAG_PREFIX
-## variable should be set to specify how the image should be tagged.
-## GitLab CI variables also affect the tag.
+## variable specify how the image should be tagged. GitLab CI
+## variables also affect the tag.
+##
+## Set the IMAGE_ARCHIVE variable to create rules for building and
+## saving the container image to a tar archive.
 ##
 ## Set IMAGE_DOCKERFILE to specify a non-default dockerfile path. The
 ## default is Dockerfile in the current directory.
 ##
-## If the docker image uses any built file, these should be added to
-## the IMAGE_FILES variable.
-##
-## The build and save goals both create $(IMAGE_ARCHIVE).
-##
-## The load goal loads $(IMAGE_ARCHIVE) into the docker daemon. The
-## target is used for local testing of containers.
-##
-## The publish goal expects the $(IMAGE_ARCHIVE) to exist and will
-## load it into the daemon. It will re-tag it to the final tag and
-## push the image.
+## If the container image uses any built file, these should be added
+## to the IMAGE_FILES variable.
 ##
 ## The build-publish goal will completely bypass $(IMAGE_ARCHIVE) and
 ## build and publish without hitting the filesystem.
-
+##
+## The build and save goals both create $(IMAGE_ARCHIVE).
+##
+## The load goal loads $(IMAGE_ARCHIVE) into the container storage.
+## This is used for local testing of containers.
+##
+## The publish goal expects the $(IMAGE_ARCHIVE) to exist and will
+## load it into the container storage. It will re-tag it to the final
+## tag and push the image.
+##
+## The login goal will login to the registry server of IMAGE_REPO. It
+## will use GitLab CI credentials from the environment if the CI
+## variable is set, otherwise credentials will be prompted for if
+## necessary.
 
 ifneq ($(IMAGE_REPO),)
 
-.PHONY: build save load publish build-publish
+.PHONY: build save load publish build-publish login
 
 IMAGE_DOCKERFILE ?= Dockerfile
 IMAGE_ARCHIVE ?= dummy.tar
@@ -332,7 +345,7 @@ endef
 _buildah = buildah
 
 define _cmd_image_buildah_build =
-  $(_buildah) bud --pull-always \
+  $(_buildah) --storage-driver=vfs bud --pull-always \
     --file=$< \
     --build-arg=BRANCH="$(CI_COMMIT_REF_NAME)" \
     --build-arg=COMMIT="$(CI_COMMIT_SHA)" \
@@ -356,8 +369,8 @@ endef
 _log_cmd_image_build = BUILD $(IMAGE_LOCAL_TAG)
 
 define _cmd_image_buildah_publish =
-  $(_buildah) push $(IMAGE_LOCAL_TAG) docker://$(IMAGE_TAG); \
-  $(_buildah) rmi $(IMAGE_LOCAL_TAG)
+  $(_buildah) --storage-driver=vfs push $(IMAGE_LOCAL_TAG) docker://$(IMAGE_TAG); \
+  $(_buildah) --storage-driver=vfs rmi $(IMAGE_LOCAL_TAG)
 endef
 define _cmd_image_docker_publish =
   docker tag $(IMAGE_LOCAL_TAG) $(IMAGE_TAG); \
@@ -368,14 +381,14 @@ endef
 _log_cmd_image_publish = PUBLISH $(IMAGE_TAG)
 
 define _cmd_image_buildah_save =
-  $(_buildah) push $(IMAGE_LOCAL_TAG) docker-archive:$(IMAGE_ARCHIVE):$(IMAGE_LOCAL_TAG); \
-  $(_buildah) rmi $(IMAGE_LOCAL_TAG)
+  $(_buildah) --storage-driver=vfs push $(IMAGE_LOCAL_TAG) docker-archive:$(IMAGE_ARCHIVE):$(IMAGE_LOCAL_TAG); \
+  $(_buildah) --storage-driver=vfs rmi $(IMAGE_LOCAL_TAG)
 endef
-define _cmd_image_docker_save
+define _cmd_image_docker_save =
   docker save $(IMAGE_LOCAL_TAG) > $(IMAGE_ARCHIVE); \
   docker rmi $(IMAGE_LOCAL_TAG)
 endef
-_log_cmd_image_publish = SAVE $(IMAGE_ARCHIVE)
+_log_cmd_image_save = SAVE $(IMAGE_ARCHIVE)
 
 build-publish: $(IMAGE_DOCKERFILE) $(IMAGE_FILES)
 	$(call _cmd_image,build)
@@ -394,7 +407,7 @@ publish:
 endif # ifeq($(_git),)
 
 define _cmd_image_buildah_load =
-  podman load < $(IMAGE_ARCHIVE)
+  podman --storage-driver=vfs load < $(IMAGE_ARCHIVE)
 endef
 define _cmd_image_docker_load =
   docker load < $(IMAGE_ARCHIVE)
@@ -404,9 +417,24 @@ _log_cmd_image_load = LOAD $(IMAGE_ARCHIVE)
 load:
 	$(call _cmd_image,load)
 
+ifneq ($(CI),)
+_registry_login_args = -u gitlab-ci-token -p "$$CI_BUILD_TOKEN"
+endif # ifneq ($(CI),)
+
+define _cmd_image_buildah_login =
+  podman login $(_registry_login_args) $(IMAGE_REPO)
+endef
+define _cmd_image_docker_login =
+  docker login $(_registry_login_args) $(IMAGE_REPO)
+endef
+_log_cmd_image_login = LOGIN $(IMAGE_REPO)
+
+login:
+	$(call _cmd_image,login)
+
 # Run command, for the automated test
 define _cmd_image_buildah_run =
-  podman run --rm $(IMAGE_LOCAL_TAG)
+  podman --storage-driver=vfs run --rm $(IMAGE_LOCAL_TAG)
 endef
 define _cmd_image_docker_run =
   docker run --rm $(IMAGE_LOCAL_TAG)
@@ -415,7 +443,7 @@ _log_cmd_image_run = RUN $(IMAGE_LOCAL_TAG)
 
 # Remove loaded image command, for the automated test
 define _cmd_image_buildah_rmi_local =
-  $(_buildah) rmi $(IMAGE_LOCAL_TAG)
+  $(_buildah) --storage-driver=vfs rmi $(IMAGE_LOCAL_TAG)
 endef
 define _cmd_image_docker_rmi_local =
   docker rmi $(IMAGE_LOCAL_TAG)
@@ -461,7 +489,7 @@ CLEANUP_FILES += $(FEDORA_ROOT_ARCHIVE)
 
 FEDORA_ROOT_RELEASE ?= 28
 
-define _cmd_fedora_root
+define _cmd_fedora_root =
 $(Q)tmpdir=$$(mktemp -d fedora_root.XXXXX) && \
 trap "rm -rf $$tmpdir" EXIT && \
 dnf install \
@@ -485,3 +513,49 @@ $(FEDORA_ROOT_ARCHIVE):
 	$(call _cmd,fedora_root)
 
 endif
+
+
+######################################################################
+### Update build.mk from GitLab
+######################################################################
+
+## Run `make update-build.mk` to make a git commit where this file is
+## replaced with the version from master in the GitLab project.
+
+# Use the web interface, since git archive --remote against GitLab
+# does not appear to work.
+_buildmk_baseurl = https://gitlab.com/ModioAB/build.mk
+_buildmk_release_ref = master
+_buildmk_repo = $(_buildmk_baseurl).git
+
+define _cmd_update_buildmk =
+$(Q)if ! $(_git) diff-index --quiet HEAD; then \
+  echo >&2 "The git working copy needs to be clean."; \
+else \
+  $(_git) ls-remote -q $(_buildmk_repo) $(_buildmk_release_ref) | \
+    (read buildmk_commit rest; \
+     buildmk_url=$(_buildmk_baseurl)/raw/$${buildmk_commit}/build.mk; \
+     $(_curl) -o $(_buildmk_path) $${buildmk_url}; \
+     if $(_git) diff-index --quiet HEAD; then \
+       echo >&2 "No changes to build.mk."; \
+     else \
+       $(_git) add $(_buildmk_path); \
+       printf \
+         "Update build.mk to %s\n\nThis version of build.mk was fetched from:\n%s" \
+         $${buildmk_commit} \
+         $${buildmk_url} | \
+       $(_git) commit -F -; \
+     fi); \
+fi
+endef
+_log_cmd_update_buildmk = UPDATE $(_buildmk_path)
+
+.PHONY: update-build.mk
+update-build.mk:
+ifeq ($(_git),)
+	$(error Git does not appear to be installed)
+else ifeq ($(_curl),)
+	$(error Curl does not appear to be installed)
+else
+	$(call _cmd,update_buildmk)
+endif # ifeq ($(_git),)

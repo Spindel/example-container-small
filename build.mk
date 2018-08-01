@@ -88,7 +88,7 @@ endef
 ## cleaned up by the clean goal.
 
 define _cmd_clean =
-$(Q)rm -rf $(CLEANUP_FILES)
+$(Q)rm -rf -- $(CLEANUP_FILES)
 endef
 _log_cmd_clean = CLEAN
 
@@ -157,8 +157,9 @@ GIT_HEAD_REF_FILE := $(shell if [ -f $(GIT_HEAD_REF_FILE) ]; then \
                              fi)
 
 define _cmd_source_archive =
-$(Q)tmpdir=$$(mktemp -d submodules.XXXXX) && \
-trap "rm -rf $$tmpdir" EXIT && \
+$(Q)set -u && \
+tmpdir=$$(pwd)/$$(mktemp -d submodules.XXXXX) && \
+trap "rm -rf -- \"$$tmpdir\"" EXIT INT TERM && \
 (cd "$(GIT_TOP_DIR)" && \
   $(_git) archive \
     -o "$(CURDIR)/$@" \
@@ -171,12 +172,13 @@ trap "rm -rf $$tmpdir" EXIT && \
     if [ -n "$$match" ]; then \
       (cd "$$path" && \
       $(_git) archive \
-	-o "$(CURDIR)/$$tmpdir/submodule.tar" \
+	-o "$$tmpdir/submodule.tar" \
 	--prefix="$(_archive_prefix)$$path/" \
 	HEAD . && \
-      tar --concatenate -f "$(CURDIR)/$@" "$(CURDIR)/$$tmpdir/submodule.tar"); \
+      tar --concatenate -f "$(CURDIR)/$@" "$$tmpdir/submodule.tar"); \
     fi \
-  done)
+  done) && \
+rm -rf -- "$$tmpdir"
 endef
 _log_cmd_source_archive = SOURCE $@
 
@@ -233,11 +235,13 @@ ifneq ($(COMPILED_ARCHIVE),)
 CLEANUP_FILES += $(COMPILED_ARCHIVE)
 
 define _cmd_compile_archive =
-$(Q)tmpdir=$$(mktemp -d compilation.XXXXX) && \
-trap "rm -rf $$tmpdir" EXIT && \
-(tar -C $$tmpdir -xf $(SOURCE_ARCHIVE) && \
-  (cd $$tmpdir/$(_archive_prefix) && $(COMPILE_COMMAND)) && \
-  tar -C $$tmpdir -cf $(COMPILED_ARCHIVE) $(_archive_prefix))
+$(Q)set -u && \
+tmpdir=$$(pwd)/$$(mktemp -d compilation.XXXXX) && \
+trap "rm -rf -- \"$$tmpdir\"" EXIT INT TERM && \
+(tar -C "$$tmpdir" -xf $(SOURCE_ARCHIVE) && \
+  (cd "$$tmpdir"/$(_archive_prefix) && $(COMPILE_COMMAND)) && \
+  tar -C "$$tmpdir" -cf $(COMPILED_ARCHIVE) $(_archive_prefix))
+rm -rf -- "$$tmpdir"
 endef
 _log_cmd_compile_archive = COMPILE $(COMPILED_ARCHIVE)
 
@@ -257,6 +261,12 @@ endif
 ## The IMAGE_REPO variable and optionally the IMAGE_TAG_PREFIX
 ## variable specify how the image should be tagged. GitLab CI
 ## variables also affect the tag.
+##
+## IMAGE_REPO currently needs to be a docker URL without the preceding
+## "docker://" transport.
+##
+## The IMAGE_REGISTRY and CI_REGISTRY variables will override the
+## registry in IMAGE_REPO.
 ##
 ## Set the IMAGE_ARCHIVE variable to create rules for building and
 ## saving the container image to a tar archive.
@@ -283,6 +293,18 @@ endif
 ## will use GitLab CI credentials from the environment if the CI
 ## variable is set, otherwise credentials will be prompted for if
 ## necessary.
+
+define _cmd_image =
+@$(if $(_log_cmd_image_$(1)), $(_log_before);printf '  %-9s %s\n' $(_log_cmd_image_$(1));$(_log_after);)
+$(Q)if command -v buildah >/dev/null && command -v podman >/dev/null; then \
+  $(_cmd_image_buildah_$(1)); \
+elif command -v docker >/dev/null; then \
+  $(_cmd_image_docker_$(1)); \
+else \
+  echo >&2 "Neither buildah/podman nor docker is available"; \
+  exit 1; \
+fi
+endef
 
 ifneq ($(IMAGE_REPO),)
 
@@ -325,22 +347,10 @@ endif
 IMAGE_TAG_SUFFIX ?= $(CI_COMMIT_REF_NAME)
 
 # Unique for this build
-IMAGE_LOCAL_TAG = $(IMAGE_REPO):$(_image_tag_prefix)$(CI_PIPELINE_ID)
+IMAGE_LOCAL_TAG = $(_image_repo):$(_image_tag_prefix)$(CI_PIPELINE_ID)
 
 # Final tag
-IMAGE_TAG = $(IMAGE_REPO):$(_image_tag_prefix)$(IMAGE_TAG_SUFFIX)
-
-define _cmd_image =
-@$(if $(_log_cmd_image_$(1)), $(_log_before);printf '  %-9s %s\n' $(_log_cmd_image_$(1));$(_log_after);)
-$(Q)if command -v buildah >/dev/null && command -v podman >/dev/null; then \
-  $(_cmd_image_buildah_$(1)); \
-elif command -v docker >/dev/null; then \
-  $(_cmd_image_docker_$(1)); \
-else \
-  echo >&2 "Neither buildah/podman nor docker is available"; \
-  exit 1; \
-fi
-endef
+IMAGE_TAG = $(_image_repo):$(_image_tag_prefix)$(IMAGE_TAG_SUFFIX)
 
 _buildah = buildah
 
@@ -417,21 +427,6 @@ _log_cmd_image_load = LOAD $(IMAGE_ARCHIVE)
 load:
 	$(call _cmd_image,load)
 
-ifneq ($(CI),)
-_registry_login_args = -u gitlab-ci-token -p "$$CI_BUILD_TOKEN"
-endif # ifneq ($(CI),)
-
-define _cmd_image_buildah_login =
-  podman login $(_registry_login_args) $(IMAGE_REPO)
-endef
-define _cmd_image_docker_login =
-  docker login $(_registry_login_args) $(IMAGE_REPO)
-endef
-_log_cmd_image_login = LOGIN $(IMAGE_REPO)
-
-login:
-	$(call _cmd_image,login)
-
 # Run command, for the automated test
 define _cmd_image_buildah_run =
   podman --storage-driver=vfs run --rm $(IMAGE_LOCAL_TAG)
@@ -452,6 +447,42 @@ _log_cmd_image_rmi_local = RMI $(IMAGE_LOCAL_TAG)
 
 endif # ifneq ($(IMAGE_REPO),)
 
+
+ifneq ($(IMAGE_REPO)$(CI_REGISTRY)$(IMAGE_REGISTRY),)
+
+# Handle IMAGE_REPO set to $(CI_REGISTRY)/... when CI_REGISTRY is unset
+_image_repo_fixup = $(patsubst /%,localhost/%,$(IMAGE_REPO))
+
+_image_repo_registry = $(firstword $(subst /, ,$(_image_repo_fixup)))
+
+ifeq ($(IMAGE_REGISTRY),)
+ifneq ($(CI_REGISTRY),)
+IMAGE_REGISTRY = $(CI_REGISTRY)
+else
+IMAGE_REGISTRY = $(_image_repo_registry)
+endif # ifneq ($(CI_REGISTRY),)
+endif # ifeq ($(IMAGE_REGISTRY),)
+
+_image_repo = $(patsubst $(_image_repo_registry)/%,$(IMAGE_REGISTRY)/%,$(_image_repo_fixup))
+
+ifneq ($(CI),)
+ifeq ($(CI_REGISTRY),$(IMAGE_REGISTRY))
+_registry_login_args = -u gitlab-ci-token -p "$$CI_BUILD_TOKEN"
+endif # ifeq ($(CI_REGISTRY),$(IMAGE_REGISTRY))
+endif # ifneq ($(CI),)
+
+define _cmd_image_buildah_login =
+  podman login $(_registry_login_args) $(IMAGE_REGISTRY)
+endef
+define _cmd_image_docker_login =
+  docker login $(_registry_login_args) $(IMAGE_REGISTRY)
+endef
+_log_cmd_image_login = LOGIN $(IMAGE_REGISTRY)
+
+login:
+	$(call _cmd_image,login)
+
+endif # ifneq ($(IMAGE_REPO)$(CI_REGISTRY)$(IMAGE_REGISTRY),)
 
 ######################################################################
 ### Test sequence helpers
@@ -490,10 +521,11 @@ CLEANUP_FILES += $(FEDORA_ROOT_ARCHIVE)
 FEDORA_ROOT_RELEASE ?= 28
 
 define _cmd_fedora_root =
-$(Q)tmpdir=$$(mktemp -d fedora_root.XXXXX) && \
-trap "rm -rf $$tmpdir" EXIT && \
+$(Q)set -u && \
+tmpdir=$$(pwd)/$$(mktemp -d fedora_root.XXXXX) && \
+trap "rm -rf -- \"$$tmpdir\"" EXIT INT TERM && \
 dnf install \
-  --installroot $(CURDIR)/$$tmpdir \
+  --installroot "$$tmpdir" \
   --releasever $(FEDORA_ROOT_RELEASE) \
   --disablerepo "*" \
   --enablerepo "fedora" \
@@ -502,10 +534,11 @@ dnf install \
   glibc-minimal-langpack \
   --setopt install_weak_deps=false \
   --assumeyes && \
-rm -rf \
-  $$tmpdir/var/cache \
-  $$tmpdir/var/log/dnf* && \
-tar -C $$tmpdir -cf $(CURDIR)/$@ .
+rm -rf -- \
+  "$$tmpdir"/var/cache \
+  "$$tmpdir"/var/log/dnf* && \
+tar -C "$$tmpdir" -cf $(CURDIR)/$@ . && \
+rm -rf -- "$$tmpdir"
 endef
 _log_cmd_fedora_root = DNF $@
 

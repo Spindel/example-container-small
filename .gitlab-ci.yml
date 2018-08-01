@@ -8,7 +8,7 @@ build_binary:
   stage: build
   tags:
     - x86_64
-  image: registry.gitlab.com/modioab/base-image:fedora-28-build-master
+  image: registry.gitlab.com/modioab/base-image/fedora-28/container:master
   script:
     - make project/hello
   artifacts:
@@ -31,7 +31,7 @@ container:
   tags:
       - buildah
       - x86_64
-  image: registry.gitlab.com/modioab/base-image:fedora-28-build-master
+  image: registry.gitlab.com/modioab/base-image/fedora-28/container:master
   before_script:
       - podman login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
   dependencies:

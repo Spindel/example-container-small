@@ -33,7 +33,7 @@ container:
       - x86_64
   image: registry.gitlab.com/modioab/base-image/fedora-28/container:master
   before_script:
-      - make login
+      - make -f build.mk login
   dependencies:
       - build_binary
   script:

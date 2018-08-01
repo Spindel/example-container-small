@@ -1,7 +1,20 @@
 stages:
-  - test
   - build
+  - test
   - publish
+
+
+build_binary:
+  stage: build
+  tags:
+    - x86_64
+  image: registry.gitlab.com/modioab/base-image/fedora-28/container:master
+  script:
+    - make project/hello
+  artifacts:
+      paths:
+          - project/hello
+      expire_in: 1 week
 
 
 test_hello:
@@ -13,28 +26,14 @@ test_hello:
     - bash -x hello.sh
 
 
-build_binary:
-  stage: build
-  tags:
-    - x86_64
-  image: registry.gitlab.com/modioab/base-image:fedora-28-build-master
-  script:
-    - make project/hello
-  artifacts:
-      paths:
-          - project/hello
-      expire_in: 1 week
-
-
 container:
   stage: publish
   tags:
       - buildah
       - x86_64
-  image: registry.gitlab.com/modioab/base-image:fedora-28-build-master
+  image: registry.gitlab.com/modioab/base-image/fedora-28/container:master
   before_script:
       - podman login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
-      - podman info
   dependencies:
       - build_binary
   script:
